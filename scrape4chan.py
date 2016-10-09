@@ -1,5 +1,4 @@
 __author__ = 'Ian'
-import urllib
 import requests
 import json
 from pprint import pprint
@@ -9,10 +8,36 @@ import os
 from datetime import datetime, timedelta
 import shutil
 import time
-import threading
 import inspect
+import threading
+import sys
 from getsize import getsize
-import lxml
+import logging
+import logging.handlers
+
+module_logger = logging.getLogger(__name__)
+module_logger.setLevel(logging.DEBUG)
+formatter = logging.Formatter('%(asctime)s - %(threadName)s - %(name) - 30s - %(levelname)s - %(message)s')
+
+module_stream_handler = logging.StreamHandler()
+module_stream_handler.setLevel(logging.WARNING)
+module_stream_handler.setFormatter(formatter)
+
+module_logger.addHandler(module_stream_handler)
+
+logFilePath = "C:\\Users\\Ian\\PycharmProjects\\WebTextAnalysis\\logs\\analyze_texts.log"
+file_handler = logging.handlers.TimedRotatingFileHandler(filename=logFilePath, when='midnight', backupCount=30)
+file_handler.setFormatter(formatter)
+file_handler.setLevel(logging.DEBUG)
+module_logger.addHandler(file_handler)
+
+now = time.strftime("%H:%M:%S", time.localtime(time.time()))
+
+
+def print_status(thread_id, status_message):
+    print(thread_id, now, status_message)
+
+directory_for_data = 'scrapped_pages'
 
 list_of_websites = [
     "http://boards.4chan.org/pol/thread/90962775/btfo",
@@ -20,7 +45,9 @@ list_of_websites = [
     "http://boards.4chan.org/pol/thread/90985993/there-are-people-on-pol-right-now-that-do-not-own",
 ]
 
-website = "http://boards.4chan.org/pol/thread/91113226/how-do-we-fix-low-testosterone-in-boys"
+website = 'http://boards.4chan.org/pol/thread/91466560/if-hillary-wins'
+# website = "http://boards.4chan.org/pol/thread/91324290/travel-back-to-the-past"
+# website = "http://boards.4chan.org/pol/thread/91113226/how-do-we-fix-low-testosterone-in-boys"
 
 """
 https://github.com/4chan/4chan-API
@@ -31,12 +58,30 @@ bad_characters = ["<", ">", ":", '"', "/", "\\", "|", "?", "*"]
 def build_name(potential_name):
     built_name = ''
     for i in potential_name:
+        if i == " ":
+            i = "_"
         if i in bad_characters:
             pass
         else:
             built_name = built_name + i
-            if len(built_name) > 15:
+            if len(built_name) >= 25:
                 return built_name
+    return built_name
+
+def build_name_from_url(url):
+    named_portion_of_url = ""
+    len_url = len(url) - 1
+    for i in range(len_url, 0, -1):
+        if url[i] == "/":
+            break
+        else:
+            named_portion_of_url = url[i] + named_portion_of_url
+
+    built_name = ''
+    for i in named_portion_of_url:
+        built_name = built_name + i
+        if len(built_name) > 25:
+            return built_name
     return built_name
 
 
@@ -98,112 +143,70 @@ class scraperThread(threading.Thread):
 
     def run(self):
         print("Starting " + self.website)
-        download_until_it_dies(self.threadId, self.website)
+        get_new_replies_until_page_dies(self.threadId, self.website)
         print("Exiting " + self.website)
 
 
 class ChanScrapper(object):
     def __init__(self, threadId, website):
+        self.cs_logger = logging.getLogger(__name__ + '.ChanScrapper')
+        self.cs_logger.info("created an instance of chan scrapper")
+        module_logger.info("creating an instance of ChanScrapper for website {0}".format(website))
         self.threadId = threadId
         self.url = website
         self.soup = None
-        self.responses = []
+        self.all_posts = []
         self.saved_post_ids = []
-        self.directory_name = None
-        self.sub_directory = None
+        self.thread_directory = None
+        self.picture_directory = None
         self.output_file = None
         pass
 
+    def scrape_existing_posts(self):
+        self.cs_logger.info("getting_url")
+        self.get_soup()
+        self.cs_logger.info("scrapping replies from thread")
+        self.strip_post_data_from_thread()
+        self.cs_logger.info("creating outfile")
+        self.create_outfile()
+        self.cs_logger.info("configuring directories")
+        self.configure_directories()
+        self.cs_logger.info("writing files to directories")
+        self.write_responses_to_file()
+        self.cs_logger.info("done writing files")
+        self.collect_saved_ids()
+
     def get_soup(self):
         r = requests.get(self.url)
-        self.soup = BeautifulSoup(r.text, 'html.parser')
+        if r.status_code == 404:
+            self.cs_logger.warning("EXIT PROCESS: website not found {0} ".format(str(self.url)))
+            sys.exit()
+        elif r.status_code == 200:
+            self.soup = BeautifulSoup(r.text, 'html.parser')
 
-    def strip_responses(self):
-        self.get_soup()
+    def strip_post_data_from_thread(self):
         self.add_op_post()
-        self.create_outfile()
         self.add_thread_responses()
 
     def add_op_post(self):
         post = self.soup.find_all(class_="post op")[0]
         op_post = Response()
-        op_post.op_subject = self.get_post_subject(post)
-        op_post.time_human = self.get_post_human_time(post)
-        op_post.time_utc = self.get_post_time_utc(post)
-        op_post.user_id = self.get_post_user_id(post)
-        op_post.post_id = self.get_post_id(post)
-        op_post.country = self.get_post_country(post)
-        op_post.text = self.get_post_text(post)
-        op_post.image_url = self.get_post_image_url(post)
-        op_post.image_name = self.get_post_image_name(post)
-        self.responses.append(op_post)
+        op_post.op_subject = get_post_subject(post)
+        op_post.time_human = get_post_human_time(post)
+        op_post.time_utc = get_post_time_utc(post)
+        op_post.user_id = get_post_user_id(post)
+        op_post.post_id = get_post_id(post)
+        op_post.country = get_post_country(post)
+        op_post.text = get_post_text(post)
+        op_post.image_url = get_post_image_url(post)
+        op_post.image_name = get_post_image_name(post)
+        self.all_posts.append(op_post)
 
     def add_thread_responses(self):
         all_replies = self.soup.find_all(class_="post reply")
         for reply in all_replies:
-            next_response = self.strip_reply_data(reply)
-            self.responses.append(next_response)
-
-    def strip_reply_data(self, reply):
-        response = Response()
-        response.time_human = self.get_post_human_time(reply)
-        response.time_utc = self.get_post_time_utc(reply)
-        response.user_id = self.get_post_user_id(reply)
-        response.post_id = self.get_post_id(reply)
-        response.country = self.get_post_country(reply)
-        response.text = self.get_post_text(reply)
-        response.image_url = self.get_post_image_url(reply)
-        response.image_name = self.get_post_image_name(reply)
-        return response
-
-    def get_post_subject(self, post):
-        return post.find_all(class_='subject')[1].text
-
-    def get_post_human_time(self, post):
-        return post.find_all(class_='dateTime')[1].text
-
-    def get_post_time_utc(self, post):
-        return post.find_all(class_='dateTime')[0]['data-utc']
-
-    def get_post_user_id(self, post):
-        return post.find_all(class_="hand")[0].text
-
-    def get_post_id(self, post):
-        return post.find_all('input')[0]['name']
-
-    def get_post_country(self, post):
-        return post.find_all(class_="flag")[0]['title']
-
-    def get_post_text(self, post):
-        post_text = ''
-        post_message = post.find_all(class_='postMessage')[0]
-        for line in post_message.contents:
-            if isinstance(line, bs4.element.NavigableString):
-                post_text = post_text + " " + line
-            elif isinstance(line, bs4.element.Tag):
-                post_text = post_text + " " + line.text
-        return post_text
-
-    def get_post_image_url(self, post):
-        if len(post.find_all(class_='file')) != 0:
-            try:
-                file_data = post.find_all(class_='fileText')[0]
-                return 'http:' + file_data.find_all('a', href=True)[0]['href']
-            except IndexError:
-                return None
-        else:
-            return None
-
-    def get_post_image_name(self, post):
-        if len(post.find_all(class_='file')) != 0:
-            try:
-                file_data = post.find_all(class_='fileText')[0]
-                return file_data.find_all('a', href=True)[0].text
-            except IndexError:
-                file = post.find_all(class_='file')[0]
-                return file.img['alt']
-        else:
-            return None
+            next_response = strip_post_data(reply)
+            self.all_posts.append(next_response)
 
     def check_if_page_is_closed(self):
         if len(self.soup.find_all(class_='closed')) > 0:
@@ -211,110 +214,214 @@ class ChanScrapper(object):
         else:
             False
 
-    def set_directory(self, name):
-        cwd = os.path.dirname(os.path.abspath(inspect.stack()[0][1]))
-        new_directory_name = cwd + "\\" + name + "\\"
-        os.makedirs(new_directory_name, exist_ok=True)
-        self.directory_name = new_directory_name
+    def configure_directories(self):
+        self.set_thread_directory(self.output_file)
+        self.set_picture_directory()
 
-    def set_sub_directory(self):
-        sub_directory_name = self.directory_name + "\\" + self.output_file + "\\"
+    def set_thread_directory(self, thread_title):
+        cwd = os.path.dirname(os.path.abspath(inspect.stack()[0][1]))
+        new_directory_name = cwd + "\\" + directory_for_data + "\\" + thread_title + "\\"
+        os.makedirs(new_directory_name, exist_ok=True)
+        self.thread_directory = new_directory_name
+
+    def set_picture_directory(self):
+        sub_directory_name = self.thread_directory + "\\" + "pics" + "\\"
         os.makedirs(sub_directory_name, exist_ok=True)
-        self.sub_directory = sub_directory_name
+        self.picture_directory = sub_directory_name
         pass
 
     def create_outfile(self):
-        doc_title = ""
-        if len(self.responses[0].op_subject) <= 1:
-            doc_title = build_name(self.responses[0].image_name)
-        else:
-            doc_title = build_name(self.responses[0].op_subject)
+        doc_title = build_name_from_url(self.url)
+        if doc_title.isdigit():
+            doc_title = ""
+            if len(self.all_posts[0].op_subject) <= 1:
+                doc_title = build_name(self.all_posts[0].text)
+            else:
+                doc_title = build_name(self.all_posts[0].op_subject)
         self.output_file = doc_title
 
-    def save_image_to_file(self, response):
-        if response.image_url[:2] == '//':
-            url = "http:" + response.image_url
-        else:
-            url = response.image_url
-        imr = requests.get(url, stream=True)
-        if imr.status_code == 200:
-            name = ''
-            for letter in response.image_name:
-                if letter in bad_characters:
-                    pass
-                else:
-                    name += letter
-            with open(self.sub_directory + name, "wb") as f:
-                imr.raw.decode_content = True
-                shutil.copyfileobj(imr.raw, f)
-
     def write_responses_to_file(self, save_images=True):
-        self.set_directory("scrapped_pages")
-        self.set_sub_directory()
-        for index, reply in enumerate(self.responses):
+        for index, reply in enumerate(self.all_posts):
             if index == 0:
                 self.save_op_post(reply, save_images)
             else:
                 self.save_response(reply, save_images)
-        self.collect_saved_ids()
-        print("Thread %s: Added %d original posts" % (self.output_file, index))
+        # module_logger.info("Thread %s: Added %d original posts" % (self.output_file, index))
 
     def save_op_post(self, op_post, save_image=True):
-        file = open(self.directory_name + self.output_file + '.txt', "a")
-        file.write("post_id: {0}\n".format(op_post.post_id))
-        file.write("time_human: {0}\n".format(op_post.time_human))
-        file.write("image: {0}\nimage_url {1}\n".format(op_post.image_name, op_post.image_url))
-        if save_image:
-            self.save_image_to_file(op_post)
-        file.write("subject: {0}\n".format(op_post.op_subject))
-        file.write("country: {0}\n".format(op_post.country))
-        file.write("text: {0}\n".format(op_post.text))
+        file = open(self.thread_directory + self.output_file + '.txt', "w")
+        write_post_id(file, op_post)
+        write_time_info(file, op_post)
+        write_image_data(file, op_post, self.picture_directory, save_image)
+        write_subject(file, op_post)
+        write_country_info(file, op_post)
+        write_text(file, op_post)
         file.write("**END_OF_POST**\n")
         file.close()
 
-    def save_response(self, reply, save_image=True):
-        file = open(self.directory_name + self.output_file + '.txt', "a")
-        file.write("time_human: {0}\n".format(reply.time_human))
-        if reply.image_url is not None:
-            file.write("image: {0}\nimage_url {1}\n".format(reply.image_name, reply.image_url))
-            if save_image:
-                self.save_image_to_file(reply)
-        file.write("country: {0}\n".format(reply.country))
-        try:
-            file.write("text: {0}\n".format(reply.text))
-        except UnicodeEncodeError:
-            file.write("text: {0}\n".format(reply.text.encode("UTF-8")))
+    def save_response(self, post, save_image=True):
+        file = open(self.thread_directory + self.output_file + '.txt', "a")
+        write_time_info(file, post)
+        write_post_id(file, post)
+        write_image_data(file, post, self.picture_directory, save_image)
+        write_country_info(file, post)
+        write_text(file, post)
         file.write("**END_OF_POST**\n")
         file.close()
 
     def collect_saved_ids(self):
-        self.saved_post_ids = [r.post_id for r in self.responses]
+        self.saved_post_ids = [r.post_id for r in self.all_posts]
 
     def save_new_replies(self):
         self.get_soup()
         new_responses = []
         for reply in self.soup.find_all(class_="post reply"):
-            if self.get_post_id(reply) in self.saved_post_ids:
+            if get_post_id(reply) in self.saved_post_ids:
                 pass
             else:
-                new_reply = self.strip_reply_data(reply)
+                new_reply = strip_post_data(reply)
                 new_responses.append(new_reply)
                 self.save_response(new_reply)
                 self.saved_post_ids.append(new_reply.post_id)
         print("thread %s: %d new replies" % (self.threadId, len(new_responses)))
-        [self.responses.append(response) for response in new_responses]
+        [self.all_posts.append(response) for response in new_responses]
 
 
-def download_until_it_dies(threadId, website):
+def strip_post_data(reply):
+    response = Response()
+    response.time_human = get_post_human_time(reply)
+    response.time_utc = get_post_time_utc(reply)
+    response.user_id = get_post_user_id(reply)
+    response.post_id = get_post_id(reply)
+    response.country = get_post_country(reply)
+    response.text = get_post_text(reply)
+    response.image_url = get_post_image_url(reply)
+    response.image_name = get_post_image_name(reply)
+    return response
+
+
+def get_post_subject(post):
+    return post.find_all(class_='subject')[1].text
+
+
+def get_post_human_time(post):
+    return post.find_all(class_='dateTime')[1].text
+
+
+def get_post_time_utc(post):
+    return post.find_all(class_='dateTime')[0]['data-utc']
+
+
+def get_post_user_id(post):
+    return post.find_all(class_="hand")[0].text
+
+
+def get_post_id(post):
+    return post.find_all('input')[0]['name']
+
+
+def get_post_country(post):
+    return post.find_all(class_="flag")[0]['title']
+
+
+def get_post_text(post):
+    post_text = ''
+    post_message = post.find_all(class_='postMessage')[0]
+    for line in post_message.contents:
+        if isinstance(line, bs4.element.NavigableString):
+            post_text = post_text + " " + line
+        elif isinstance(line, bs4.element.Tag):
+            post_text = post_text + " " + line.text
+    return post_text
+
+
+def get_post_image_url(post):
+    if len(post.find_all(class_='file')) != 0:
+        try:
+            file_data = post.find_all(class_='fileText')[0]
+            return 'http:' + file_data.find_all('a', href=True)[0]['href']
+        except IndexError:
+            return None
+    else:
+        return None
+
+
+def get_post_image_name(post):
+    if len(post.find_all(class_='file')) != 0:
+        try:
+            file_data = post.find_all(class_='fileText')[0]
+            return file_data.find_all('a', href=True)[0].text
+        except IndexError:
+            file = post.find_all(class_='file')[0]
+            return file.img['alt']
+    else:
+        return None
+
+
+def write_subject(file, op_post):
+    file.write("subject: {0}\n".format(op_post.op_subject))
+
+
+def write_country_info(file, post):
+    file.write("country: {0}\n".format(post.country))
+
+
+def write_post_id(file, post):
+    file.write("post_id: {0}\n".format(post.post_id))
+
+
+def write_time_info(file, post):
+    file.write("time_human: {0}\ntime_utc: {1}\n".format(post.time_human, post.time_utc))
+
+
+def write_text(file, post):
+    try:
+        file.write("text: {0}\n".format(post.text))
+    except UnicodeEncodeError:
+        file.write("text: {0}\n".format(post.text.encode("UTF-8")))
+
+
+def write_image_data(file, post, pic_directory, save_image=True):
+    if post.image_url is not None:
+        try:
+            file.write("image_name: {0}\nimage_url {1}\n".format(post.image_name, post.image_url))
+        except UnicodeEncodeError as e:
+            pass
+            module_logger.warning("Found Exception while writing image data")
+            module_logger.debug("could not write image data to file. message {0}".format(e))
+        if save_image:
+            try:
+                save_image_to_file(post, pic_directory)
+            except UnicodeEncodeError:
+                print("could not write {0} to file.  url: {1}".format(post.image_name, post.image_url))
+
+
+def save_image_to_file(post, pic_directory):
+    if post.image_url[:2] == '//':
+        url = "http:" + post.image_url
+    else:
+        url = post.image_url
+    imr = requests.get(url, stream=True)
+    if imr.status_code == 200:
+        name = ''
+        for letter in post.image_name:
+            if letter in bad_characters:
+                pass
+            else:
+                name += letter
+        with open(pic_directory + name, "wb") as f:
+            imr.raw.decode_content = True
+            shutil.copyfileobj(imr.raw, f)
+
+
+def get_new_replies_until_page_dies(threadId, website):
     scrapper = ChanScrapper(threadId, website)
-    scrapper.strip_responses()
-    scrapper.write_responses_to_file()
+    scrapper.scrape_existing_posts()
     sleep_time = 30
     while not scrapper.check_if_page_is_closed():
         time.sleep(sleep_time)
-        # print("Paused for %d sec:" % sleep_time, end=" ")
         scrapper.save_new_replies()
-    print("Scraping {0} last time:".format(scrapper.url), end=" ")
+    # print("Scraping {0} last time:".format(scrapper.url), end=" ")
     scrapper.save_new_replies()
 
 
@@ -330,4 +437,4 @@ def main():
 
 if __name__ == '__main__':
     # main()
-    download_until_it_dies(1, website)
+    get_new_replies_until_page_dies(1, website)
